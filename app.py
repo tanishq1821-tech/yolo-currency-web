@@ -10,9 +10,12 @@ from werkzeug.utils import secure_filename
 app = Flask(__name__)
 
 # --- INITIALIZE FIREBASE ADMIN SDK ---
+db = None
+
 if os.path.exists("serviceAccountKey.json"):
     cred = credentials.Certificate("serviceAccountKey.json")
     firebase_admin.initialize_app(cred)
+    db = firestore.client()
 elif os.environ.get("FIREBASE_CREDS_JSON"):
     creds_raw = os.environ.get("FIREBASE_CREDS_JSON", "").strip()
     if creds_raw:
@@ -20,20 +23,18 @@ elif os.environ.get("FIREBASE_CREDS_JSON"):
             service_account_info = json.loads(creds_raw)
             cred = credentials.Certificate(service_account_info)
             firebase_admin.initialize_app(cred)
+            db = firestore.client()
         except json.JSONDecodeError as e:
-            print(
-                f"Error parsing FIREBASE_CREDS_JSON environment variable: {e}"
-            )
+            print(f"Error parsing FIREBASE_CREDS_JSON: {e}")
     else:
-        print("FIREBASE_CREDS_JSON environment variable is empty.")
-
-db = firestore.client()
+        print("FIREBASE_CREDS_JSON variable is empty.")
+else:
+    print("Warning: No Firebase credentials found.")
 
 UPLOAD_FOLDER = os.path.join("static", "uploads")
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Load model globally at app startup
 MODEL_PATH = os.path.join(
     "runs", "detect", "inr_mendeley_model-9", "weights", "best.pt"
 )
@@ -59,13 +60,11 @@ def detect():
         filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
         file.save(filepath)
 
-        # Resize image before passing to model to save RAM & CPU time
         img = cv2.imread(filepath)
         if img is not None:
             img_resized = cv2.resize(img, (640, 640))
             cv2.imwrite(filepath, img_resized)
 
-        # Run prediction with explicit image size
         results = model.predict(
             source=filepath, imgsz=640, conf=0.35, iou=0.45
         )
@@ -86,14 +85,16 @@ def detect():
                 {"class": class_name, "confidence": f"{confidence:.2f}%"}
             )
 
-        try:
-            db.collection("currency_detections").add({
-                "filename": filename,
-                "detections": detections,
-                "timestamp": firestore.SERVER_TIMESTAMP,
-            })
-        except Exception as e:
-            print(f"Firebase logging error: {e}")
+        # Safely attempt database write only if Firebase initialized successfully
+        if db is not None:
+            try:
+                db.collection("currency_detections").add({
+                    "filename": filename,
+                    "detections": detections,
+                    "timestamp": firestore.SERVER_TIMESTAMP,
+                })
+            except Exception as e:
+                print(f"Firebase logging error: {e}")
 
         return jsonify({"status": "success", "detections": detections})
 
