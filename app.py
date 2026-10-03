@@ -1,10 +1,24 @@
 import os
+import json
 import cv2
+import firebase_admin
+from firebase_admin import credentials, firestore
 from flask import Flask, render_template, request, jsonify
 from ultralytics import YOLO
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
+
+if os.path.exists("serviceAccountKey.json"):
+  cred = credentials.Certificate("serviceAccountKey.json")
+  firebase_admin.initialize_app(cred)
+elif os.environ.get("FIREBASE_CREDS_JSON"):
+  # Read secret JSON directly from Render's Environment Variable
+  service_account_info = json.loads(os.environ.get("FIREBASE_CREDS_JSON"))
+  cred = credentials.Certificate(service_account_info)
+  firebase_admin.initialize_app(cred)
+
+db = firestore.client()
 
 UPLOAD_FOLDER = os.path.join('static', 'uploads')
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
@@ -61,12 +75,17 @@ def detect():
           {'class': class_name, 'confidence': f'{confidence:.2f}%'}
       )
 
-    return jsonify({
-        'original_image': f'/static/uploads/{filename}',
-        'detected_image': f'/static/uploads/{output_filename}',
-        'detections': detections,
-    })
+   try:
+      db.collection("currency_detections").add({
+          "filename": filename,
+          "detections": detections,
+          "timestamp": firestore.SERVER_TIMESTAMP,
+      })
+    except Exception as e:
+      print(f"Firebase logging error: {e}")
+    # -----------------------------------------------------
 
+    return jsonify({"status": "success", "detections": detections})
 
 if __name__ == '__main__':
   port = int(os.environ.get('PORT', 5000))
